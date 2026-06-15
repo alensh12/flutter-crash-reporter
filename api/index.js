@@ -7,11 +7,18 @@ app.get('/', (req, res) => {
   res.send("🚀 Crash Reporter Backend is Running!");
 });
 
+// Handle GET on /crashes (for testing/info)
+app.get('/crashes', (req, res) => {
+  res.status(405).json({ 
+    message: "Use POST method to send crash reports" 
+  });
+});
+
 app.post('/crashes', (req, res) => {
   try {
     const crash = req.body;
     
-    console.log("🚨 NEW CRASH REPORT:");
+    console.log("🚨 NEW CRASH REPORT RECEIVED:");
     console.log(JSON.stringify(crash, null, 2));
 
     res.status(200).json({ 
