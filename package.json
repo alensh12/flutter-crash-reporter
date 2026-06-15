@@ -2,7 +2,8 @@
   "name": "flutter-crash-reporter",
   "version": "1.0.0",
   "scripts": {
-    "dev": "vercel dev"
+    "dev": "node dev-server.js",
+    "dev:vercel": "npx vercel dev"
   },
   "dependencies": {
     "express": "^4.19.2"

@@ -1,0 +1,15 @@
+name: tizen_crash_reporter_example
+description: Example wiring for the Tizen crash reporter sketch.
+publish_to: none
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  tizen_crash_reporter:
+    path: ../
+
+flutter:
+  uses-material-design: true
