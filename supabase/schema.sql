@@ -12,6 +12,7 @@ create table if not exists public.crash_reports (
   error_type text,
   device_type text not null default 'unknown',
   device_model text,
+  device_id text,
   tizen_version text,
   fatal boolean not null default true,
   message text,
@@ -25,6 +26,7 @@ alter table public.crash_reports
   add column if not exists build_number text,
   add column if not exists error_type text,
   add column if not exists device_model text,
+  add column if not exists device_id text,
   add column if not exists tizen_version text,
   add column if not exists fatal boolean not null default true,
   add column if not exists message text,
@@ -47,6 +49,9 @@ create index if not exists crash_reports_error_type_idx
 
 create index if not exists crash_reports_fatal_idx
   on public.crash_reports (fatal);
+
+create index if not exists crash_reports_device_id_idx
+  on public.crash_reports (device_id);
 
 -- Optional: enable RLS and deny direct client access (API uses service role key).
 alter table public.crash_reports enable row level security;

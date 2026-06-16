@@ -62,6 +62,7 @@ function toDbRow(record) {
     error_type: record.errorType,
     device_type: record.deviceType || 'unknown',
     device_model: record.deviceModel,
+    device_id: record.deviceId,
     tizen_version: record.tizenVersion,
     fatal: record.fatal !== false,
     message: record.message,

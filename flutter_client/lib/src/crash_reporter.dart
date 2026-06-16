@@ -71,7 +71,7 @@ class CrashReporter {
           stackTrace: details.stack?.toString(),
           errorType: 'FlutterError',
           errorSource: 'flutter',
-          fatal: true,
+          fatal: false,
         ),
       );
       if (_config!.showFlutterErrorOnScreen) {
@@ -140,6 +140,52 @@ class CrashReporter {
     debugPrint('[CrashReporter] simulateManagedCrashForTesting →');
     await _nativeBridge?.simulateManagedCrash();
     debugPrint('[CrashReporter] simulateManagedCrashForTesting ← done (relaunch app to flush)');
+  }
+
+  /// Debug-only: trigger a native SIGSEGV via the host signal handler.
+  ///
+  /// The process should terminate immediately. Relaunch the app to upload the
+  /// pending `native_cpp` crash file via [flushNativeCrashes].
+  static Future<void> simulateNativeCppCrashForTesting() async {
+    _assertInitialized();
+    debugPrint('[CrashReporter] simulateNativeCppCrashForTesting →');
+    await _nativeBridge?.simulateNativeCppCrash();
+    debugPrint('[CrashReporter] simulateNativeCppCrashForTesting ← process may exit');
+  }
+
+  static String? _resolveNativeCrashId(Map<String, dynamic> crash) {
+    final id = crash['id']?.toString();
+    if (id != null && id.isNotEmpty) {
+      return id;
+    }
+
+    final nativeCrashId = crash['nativeCrashId']?.toString();
+    if (nativeCrashId != null && nativeCrashId.isNotEmpty) {
+      return nativeCrashId;
+    }
+
+    return null;
+  }
+
+  static String? _normalizeNativeTimestamp(String? raw) {
+    if (raw == null || raw.isEmpty) {
+      return null;
+    }
+
+    final parsed = DateTime.tryParse(raw);
+    if (parsed != null) {
+      return parsed.toUtc().toIso8601String();
+    }
+
+    final epochSeconds = int.tryParse(raw);
+    if (epochSeconds != null) {
+      return DateTime.fromMillisecondsSinceEpoch(
+        epochSeconds * 1000,
+        isUtc: true,
+      ).toIso8601String();
+    }
+
+    return null;
   }
 
   static Future<bool> report({
@@ -217,20 +263,23 @@ class CrashReporter {
     }
 
     for (final crash in pending) {
-      final id = crash['id']?.toString();
+      final id = _resolveNativeCrashId(crash);
       if (id == null || id.isEmpty) {
         debugPrint('[CrashReporter] flushNativeCrashes: skipping crash without id');
         continue;
       }
+
+      final errorSource = crash['errorSource']?.toString() ??
+          (crash['signal'] != null ? 'native_cpp' : 'native_managed');
 
       debugPrint('[CrashReporter] flushNativeCrashes: uploading id=$id');
       final delivered = await report(
         message: crash['message']?.toString() ?? 'Native crash',
         stackTrace: crash['stackTrace']?.toString(),
         errorType: crash['errorType']?.toString() ?? 'NativeCrash',
-        errorSource: crash['errorSource']?.toString() ?? 'native_managed',
+        errorSource: errorSource,
         fatal: crash['fatal'] != false,
-        timestamp: crash['timestamp']?.toString(),
+        timestamp: _normalizeNativeTimestamp(crash['timestamp']?.toString()),
         customKeys: {
           'nativeCrashId': id,
           if (crash['signal'] != null) 'signal': crash['signal'].toString(),
@@ -264,6 +313,7 @@ class CrashReporter {
       'platform': 'tizen',
       'deviceType': metadata['deviceType'] ?? config.deviceType.value,
       'deviceModel': metadata['deviceModel'] ?? config.deviceModel,
+      'deviceId': metadata['deviceId'] ?? config.deviceId,
       'tizenVersion': metadata['tizenVersion'] ?? config.tizenVersion,
       'appId': metadata['appId'] ?? config.appId,
       'appVersion': metadata['appVersion'] ?? config.appVersion,

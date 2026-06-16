@@ -9,6 +9,7 @@ class CrashReporterConfig {
     this.buildNumber,
     this.deviceType = TizenDeviceType.unknown,
     this.deviceModel,
+    this.deviceId,
     this.tizenVersion,
     this.timeout = const Duration(seconds: 10),
     this.maxQueueSize = 100,
@@ -32,6 +33,7 @@ class CrashReporterConfig {
   final String? buildNumber;
   final TizenDeviceType deviceType;
   final String? deviceModel;
+  final String? deviceId;
   final String? tizenVersion;
   final Duration timeout;
   final int maxQueueSize;

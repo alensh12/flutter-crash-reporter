@@ -46,7 +46,7 @@ Supabase is the persistent storage layer for crash records:
 - client init: `api/supabase.js`
 - insert/read logic: `api/storage.js`
 
-Recent updates persist key crash fields in dedicated columns (`error_type`, `message`, `stack_trace`, `device_model`, `tizen_version`, `fatal`, etc.) while also keeping the full raw object in `payload` JSONB.
+Recent updates persist key crash fields in dedicated columns (`error_type`, `message`, `stack_trace`, `device_model`, `device_id`, `tizen_version`, `fatal`, etc.) while also keeping the full raw object in `payload` JSONB.
 
 ## How errors are captured from Flutter Tizen devices
 
@@ -81,9 +81,24 @@ Flow:
 4. Each native crash is uploaded to Vercel with `errorSource: native_managed` (or provided source)
 5. If upload succeeds, SDK asks host to delete the pending crash entry
 
+## 3) Native C/C++ crashes (`native_cpp`, next-launch path)
+
+Requires `native_crash_handler_plugin` in the host app TPK. Signal handlers (`SIGSEGV`, `SIGABRT`, `SIGBUS`) write async-signal-safe JSON to `<app_data>/crashes/pending_<id>.json` and the process exits.
+
+- `simulateNativeCppCrash` (debug) — triggers a test SIGSEGV via `TriggerTestSegfault()`
+- Upload uses the same `flushNativeCrashes()` path as managed native crashes
+- `errorSource` is `native_cpp`; `signal` is copied into `customKeys`
+- Backtraces are raw native addresses (`#0 0x...`), not Dart file:line
+
+Install path:
+
+1. Add `native_crash_handler_plugin` to the app `pubspec.yaml`
+2. flutter-tizen `NativeCrashHandler.TryInstall()` runs in `FlutterApplication.OnCreate()` (requires updated embedding)
+3. Plugin `.so` is packaged into the TPK `lib/` directory
+
 ## Architecture overview
 
-1. **Device crash occurs** (Dart/Flutter immediately, native managed on next launch)
+1. **Device crash occurs** (Dart/Flutter immediately; `native_managed` / `native_cpp` on next launch)
 2. **Flutter SDK** formats payload and sends to `POST /crashes`
 3. **Vercel API** validates with `api/schema.js`
 4. **Storage layer** writes to Supabase `crash_reports`
@@ -105,7 +120,7 @@ Optional but recommended:
 - `errorType`
 - `errorSource` (`dart`, `flutter`, `native_managed`, `native_cpp`)
 - `stackTrace`
-- `deviceModel`, `tizenVersion`, `buildNumber`
+- `deviceModel`, `deviceId` (Tizen device ID / `tizenId`), `tizenVersion`, `buildNumber`
 - `fatal`, `timestamp`, `customKeys`, `breadcrumbs`
 
 Response (`201`):
@@ -118,6 +133,69 @@ Response (`201`):
   "message": "Crash reported successfully"
 }
 ```
+
+## Fatal vs non-fatal classification
+
+Every crash report includes a `fatal` boolean. This is a classification label for
+triage and filtering. The current API stores both fatal and non-fatal crashes.
+
+### How `fatal` is set
+
+- **Flutter SDK:** global handlers (`FlutterError`, `PlatformDispatcher`, and
+  zone errors via `runGuarded`) report with `fatal: true` by default.
+- **Manual reports:** app code can explicitly send `fatal: false` through
+  `CrashReporter.report(...)`.
+- **Native crash flush:** uses native crash value when present, otherwise falls
+  back to `fatal: true`.
+- **API normalization:** when omitted, `fatal` defaults to `true`.
+
+### Classification rules
+
+- **Fatal:** `fatal == true` (default for uncaught/runtime crashes)
+- **Non-fatal:** `fatal == false` (explicitly marked by caller)
+
+`errorSource` and `fatal` are independent fields. For example, a `dart` error
+can still be marked non-fatal if the caller reports it that way.
+
+### Database storage
+
+`fatal` is stored in two places:
+
+- dedicated boolean column: `crash_reports.fatal`
+- full raw payload JSON: `crash_reports.payload`
+
+### Query examples (Supabase SQL)
+
+Fatal only:
+
+```sql
+select id, app_id, error_type, message, error_source, client_timestamp
+from public.crash_reports
+where fatal = true
+order by received_at desc;
+```
+
+Non-fatal only:
+
+```sql
+select id, app_id, error_type, message, error_source, client_timestamp
+from public.crash_reports
+where fatal = false
+order by received_at desc;
+```
+
+Fatal native managed only:
+
+```sql
+select id, app_id, error_type, message, client_timestamp
+from public.crash_reports
+where fatal = true
+  and error_source = 'native_managed'
+order by received_at desc;
+```
+
+Optional metadata keys from `metadataProvider` that are not mapped to top-level
+crash fields (for example `deviceDuid`) are copied into `customKeys` automatically.
 
 ## Local development
 
@@ -159,5 +237,20 @@ Use `.env.example` as reference:
 ## Notes and limitations
 
 - If Supabase env vars are missing, API falls back to in-memory storage (non-persistent).
-- Native crash capture itself depends on host-side Tizen implementation; this repo provides the Flutter bridge + upload flow.
+- **Dart / Flutter crashes** upload immediately (or queue offline).
+- **Managed .NET crashes** (`native_managed`) persist to disk and upload on next launch.
+- **Native C/C++ crashes** (`native_cpp`) require `native_crash_handler_plugin` in the app TPK. Signal handlers write minimal JSON to `<app_data>/crashes/`; upload happens on the next cold start via `flushNativeCrashes()`.
+
+### Native C/C++ limitations (Phase 2)
+
+| Limitation | Detail |
+|------------|--------|
+| AVPlay/GStreamer segfaults | Handlers catch SIGSEGV/SIGABRT/SIGBUS when the plugin is linked; real-world AVPlay paths must be validated per TV firmware |
+| C# runner wiring | Handlers install via `native_crash_handler_plugin.so` + flutter-tizen `NativeCrashHandler.TryInstall()` — not from `libflutter_tizen.so` alone |
+| Signal-handler constraints | Async-signal-safe only (`dprintf`, `backtrace`); no rich symbolication in-process |
+| Process death | Segfault still kills the app; no in-process upload |
+| No symbols | Backtraces are raw addresses (`#0 0x...`), not `file:line` like Dart |
+
+See [`TESTING.md`](TESTING.md) Phase 2 for device validation steps.
+
 - The API currently logs ingest events to Vercel function logs for debugging.

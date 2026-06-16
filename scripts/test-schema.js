@@ -37,6 +37,20 @@ function testNativeManagedCrash() {
 
 function testNativeCppCrash() {
   const stackTrace = '#0 0x12345678\\n#1 0x87654321';
+  const result = validateCrashPayload({
+    platform: 'tizen',
+    appId: 'np.com.nettv',
+    appVersion: '1.2.18',
+    message: 'Native crash: SIGSEGV',
+    stackTrace,
+    errorType: 'SIGSEGV',
+    errorSource: 'native_cpp',
+    customKeys: { signal: 'SIGSEGV', nativeCrashId: '1700000000_12345' },
+  });
+
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.crash.errorSource, 'native_cpp');
+
   const fingerprint = computeFingerprint({
     errorType: 'SIGSEGV',
     message: 'Native crash: SIGSEGV',
@@ -45,6 +59,35 @@ function testNativeCppCrash() {
   });
 
   assert.strictEqual(fingerprint.length, 16);
+}
+
+function testNativeCppCrashWithoutTimestamp() {
+  const result = validateCrashPayload({
+    platform: 'tizen',
+    appId: 'np.com.nettv',
+    appVersion: '1.2.18',
+    message: 'Native crash: SIGSEGV',
+    stackTrace: '#0 0xdeadbeef',
+    errorType: 'SIGSEGV',
+    errorSource: 'native_cpp',
+  });
+
+  assert.strictEqual(result.ok, true);
+  assert.ok(result.crash.timestamp);
+}
+
+function testDeviceId() {
+  const result = validateCrashPayload({
+    platform: 'tizen',
+    appId: 'np.com.nettv',
+    appVersion: '1.2.18',
+    message: 'test',
+    deviceId: 'tizen-abc-123',
+    errorSource: 'dart',
+  });
+
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.crash.deviceId, 'tizen-abc-123');
 }
 
 function testInvalidErrorSource() {
@@ -62,6 +105,8 @@ function testInvalidErrorSource() {
 testDartCrash();
 testNativeManagedCrash();
 testNativeCppCrash();
+testNativeCppCrashWithoutTimestamp();
+testDeviceId();
 testInvalidErrorSource();
 
 console.log('schema tests passed');

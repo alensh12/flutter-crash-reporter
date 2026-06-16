@@ -65,6 +65,7 @@ function validateCrashPayload(body) {
     platform: 'tizen',
     deviceType: body.deviceType || 'unknown',
     deviceModel: optionalString(body.deviceModel),
+    deviceId: optionalString(body.deviceId),
     tizenVersion: optionalString(body.tizenVersion),
     appId: body.appId.trim(),
     appVersion: body.appVersion.trim(),

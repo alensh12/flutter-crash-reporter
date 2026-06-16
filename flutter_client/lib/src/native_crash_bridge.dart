@@ -81,4 +81,25 @@ class NativeCrashBridge {
       rethrow;
     }
   }
+
+  /// Debug-only: triggers a native SIGSEGV in the host process.
+  Future<void> simulateNativeCppCrash() async {
+    debugPrint('[NativeCrashBridge] simulateNativeCppCrash →');
+    try {
+      await _channel.invokeMethod<void>('simulateNativeCppCrash');
+      debugPrint('[NativeCrashBridge] simulateNativeCppCrash ← ok');
+    } on MissingPluginException catch (error) {
+      debugPrint('[NativeCrashBridge] simulateNativeCppCrash MissingPluginException: $error');
+      rethrow;
+    } on PlatformException catch (error) {
+      debugPrint(
+        '[NativeCrashBridge] simulateNativeCppCrash PlatformException: '
+        '${error.code} ${error.message}',
+      );
+      rethrow;
+    } catch (error) {
+      debugPrint('[NativeCrashBridge] simulateNativeCppCrash error: $error');
+      rethrow;
+    }
+  }
 }
