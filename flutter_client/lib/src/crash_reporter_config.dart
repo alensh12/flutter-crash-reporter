@@ -1,7 +1,9 @@
+typedef CrashMetadataProvider = Future<Map<String, String>> Function();
+
 class CrashReporterConfig {
   const CrashReporterConfig({
     required this.endpoint,
-    required this.apiKey,
+    this.apiKey = '',
     required this.appId,
     required this.appVersion,
     this.buildNumber,
@@ -14,12 +16,16 @@ class CrashReporterConfig {
     this.userId,
     this.userEmail,
     this.userName,
+    this.enableNativeCrashFlush = true,
+    this.nativeCrashChannel = 'tizen/crash_reporter',
+    this.showFlutterErrorOnScreen = false,
+    this.metadataProvider,
   });
 
   /// Example: https://your-app.vercel.app/crashes
   final String endpoint;
 
-  /// Sent as `X-Api-Key` header.
+  /// Sent as `X-Api-Key` header when non-empty.
   final String apiKey;
   final String appId;
   final String appVersion;
@@ -33,6 +39,18 @@ class CrashReporterConfig {
   final String? userId;
   final String? userEmail;
   final String? userName;
+
+  /// When true, pending native crash files are uploaded during [CrashReporter.init].
+  final bool enableNativeCrashFlush;
+
+  /// Method channel used to read/clear native crash files from App.cs.
+  final String nativeCrashChannel;
+
+  /// When true, [FlutterError.presentError] is called after reporting framework errors.
+  final bool showFlutterErrorOnScreen;
+
+  /// Optional hook to refresh app/device metadata before each report.
+  final CrashMetadataProvider? metadataProvider;
 }
 
 enum TizenDeviceType {

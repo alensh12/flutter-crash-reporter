@@ -12,6 +12,7 @@ app.get('/', (req, res) => {
     status: 'ok',
     service: 'flutter-crash-reporter',
     platform: 'tizen',
+    storage: storage.isSupabaseConfigured() ? 'supabase' : 'memory',
     endpoints: {
       ingest: 'POST /crashes',
       list: 'GET /crashes',
@@ -21,44 +22,61 @@ app.get('/', (req, res) => {
   });
 });
 
-app.get('/crashes/groups/summary', requireApiKey, (req, res) => {
-  const limit = parseLimit(req.query.limit, 50);
-  const appId = req.query.appId || undefined;
+app.get('/crashes/groups/summary', requireApiKey, async (req, res) => {
+  try {
+    const limit = parseLimit(req.query.limit, 50);
+    const appId = req.query.appId || undefined;
+    const groups = await storage.listGroups({ limit, appId });
 
-  res.json({
-    status: 'success',
-    groups: storage.listGroups({ limit, appId }),
-  });
-});
-
-app.get('/crashes/:id', requireApiKey, (req, res) => {
-  const crash = storage.getCrashById(req.params.id);
-
-  if (!crash) {
-    return res.status(404).json({
-      status: 'error',
-      message: 'Crash report not found',
+    res.json({
+      status: 'success',
+      groups,
     });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ status: 'error', message: 'Internal server error' });
   }
-
-  return res.json({
-    status: 'success',
-    crash,
-  });
 });
 
-app.get('/crashes', requireApiKey, (req, res) => {
-  const limit = parseLimit(req.query.limit, 50);
-  const appId = req.query.appId || undefined;
-  const fingerprint = req.query.fingerprint || undefined;
+app.get('/crashes/:id', requireApiKey, async (req, res) => {
+  try {
+    const crash = await storage.getCrashById(req.params.id);
 
-  res.json({
-    status: 'success',
-    crashes: storage.listCrashes({ limit, appId, fingerprint }),
-  });
+    if (!crash) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'Crash report not found',
+      });
+    }
+
+    return res.json({
+      status: 'success',
+      crash,
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ status: 'error', message: 'Internal server error' });
+  }
 });
 
-app.post('/crashes', requireApiKey, (req, res) => {
+app.get('/crashes', requireApiKey, async (req, res) => {
+  try {
+    const limit = parseLimit(req.query.limit, 50);
+    const appId = req.query.appId || undefined;
+    const fingerprint = req.query.fingerprint || undefined;
+    const crashes = await storage.listCrashes({ limit, appId, fingerprint });
+
+    res.json({
+      status: 'success',
+      crashes,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ status: 'error', message: 'Internal server error' });
+  }
+});
+
+app.post('/crashes', requireApiKey, async (req, res) => {
   try {
     const validation = validateCrashPayload(req.body);
 
@@ -70,7 +88,7 @@ app.post('/crashes', requireApiKey, (req, res) => {
       });
     }
 
-    const record = storage.createCrashRecord(validation.crash);
+    const record = await storage.createCrashRecord(validation.crash);
 
     console.log('NEW TIZEN CRASH REPORT:', JSON.stringify(record, null, 2));
 

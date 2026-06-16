@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 
 const DEVICE_TYPES = new Set(['tv', 'watch', 'mobile', 'unknown']);
+const ERROR_SOURCES = new Set(['dart', 'flutter', 'native_managed', 'native_cpp']);
 
 /**
  * Minimal production schema for Flutter-on-Tizen crash reports.
@@ -24,6 +25,10 @@ function validateCrashPayload(body) {
 
   if (body.deviceType !== undefined && !DEVICE_TYPES.has(body.deviceType)) {
     errors.push(`deviceType must be one of: ${[...DEVICE_TYPES].join(', ')}`);
+  }
+
+  if (body.errorSource !== undefined && !ERROR_SOURCES.has(body.errorSource)) {
+    errors.push(`errorSource must be one of: ${[...ERROR_SOURCES].join(', ')}`);
   }
 
   if (body.fatal !== undefined && typeof body.fatal !== 'boolean') {
@@ -66,6 +71,7 @@ function validateCrashPayload(body) {
     buildNumber: optionalString(body.buildNumber),
     fatal: body.fatal !== false,
     errorType: optionalString(body.errorType) || 'UnknownError',
+    errorSource: normalizeErrorSource(body),
     message: body.message.trim(),
     stackTrace: optionalString(body.stackTrace),
     breadcrumbs: Array.isArray(body.breadcrumbs) ? body.breadcrumbs.slice(-50) : [],
@@ -80,14 +86,33 @@ function validateCrashPayload(body) {
   return { ok: true, crash: normalized };
 }
 
+function normalizeErrorSource(body) {
+  if (typeof body.errorSource === 'string' && ERROR_SOURCES.has(body.errorSource)) {
+    return body.errorSource;
+  }
+
+  if (body.errorType === 'FlutterError') {
+    return 'flutter';
+  }
+
+  if (body.customKeys && typeof body.customKeys.errorSource === 'string') {
+    const customSource = body.customKeys.errorSource;
+    if (ERROR_SOURCES.has(customSource)) {
+      return customSource;
+    }
+  }
+
+  return 'dart';
+}
+
 function computeFingerprint(crash) {
-  const topFrame = extractTopFrame(crash.stackTrace);
+  const topFrame = extractTopFrame(crash.stackTrace, crash.errorSource);
   const raw = [crash.errorType, crash.message, topFrame].join('|').toLowerCase();
 
   return crypto.createHash('sha256').update(raw).digest('hex').slice(0, 16);
 }
 
-function extractTopFrame(stackTrace) {
+function extractTopFrame(stackTrace, errorSource) {
   if (!stackTrace) {
     return '';
   }
@@ -98,9 +123,25 @@ function extractTopFrame(stackTrace) {
     .filter(Boolean);
 
   for (const line of lines) {
-    if (line.startsWith('#0') || line.includes('.dart:')) {
+    if (line.startsWith('#0') || line.match(/^#\d+\s/)) {
       return line;
     }
+  }
+
+  for (const line of lines) {
+    if (line.includes('.dart:')) {
+      return line;
+    }
+  }
+
+  for (const line of lines) {
+    if (line.startsWith('at ') && line.includes('(')) {
+      return line;
+    }
+  }
+
+  if (errorSource === 'native_cpp' || errorSource === 'native_managed') {
+    return lines[0] || '';
   }
 
   return lines[0] || '';

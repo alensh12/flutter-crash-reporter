@@ -9,24 +9,26 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
 import 'crash_reporter_config.dart';
+import 'native_crash_bridge.dart';
 
 /// Central crash reporter for Flutter-on-Tizen.
 ///
 /// Usage:
 /// ```dart
 /// Future<void> main() async {
-///   WidgetsFlutterBinding.ensureInitialized();
-///   await CrashReporter.init(
-///     config: CrashReporterConfig(
-///       endpoint: 'https://your-app.vercel.app/crashes',
-///       apiKey: 'your-secret-key',
-///       appId: 'com.example.tvapp',
-///       appVersion: '1.0.0',
-///       deviceType: TizenDeviceType.tv,
-///     ),
-///   );
-///   CrashReporter.installGlobalHandlers();
-///   runApp(const MyApp());
+///   await CrashReporter.runGuarded(() async {
+///     WidgetsFlutterBinding.ensureInitialized();
+///     await CrashReporter.init(
+///       config: CrashReporterConfig(
+///         endpoint: 'https://your-app.vercel.app/crashes',
+///         appId: 'com.example.tvapp',
+///         appVersion: '1.0.0',
+///         deviceType: TizenDeviceType.tv,
+///       ),
+///     );
+///     CrashReporter.installGlobalHandlers();
+///     runApp(const MyApp());
+///   });
 /// }
 /// ```
 class CrashReporter {
@@ -34,6 +36,7 @@ class CrashReporter {
 
   static CrashReporterConfig? _config;
   static SharedPreferences? _prefs;
+  static NativeCrashBridge? _nativeBridge;
   static final List<String> _breadcrumbs = [];
   static final _sessionId = const Uuid().v4();
   static final _sessionStartedAt = DateTime.now().toUtc();
@@ -45,8 +48,16 @@ class CrashReporter {
   static Future<void> init({required CrashReporterConfig config}) async {
     _config = config;
     _prefs = await SharedPreferences.getInstance();
+    _nativeBridge = NativeCrashBridge(config.nativeCrashChannel);
     _initialized = true;
+    debugPrint(
+      '[CrashReporter] init: channel=${config.nativeCrashChannel} '
+      'enableNativeCrashFlush=${config.enableNativeCrashFlush}',
+    );
     await flushQueue();
+    if (config.enableNativeCrashFlush) {
+      await flushNativeCrashes();
+    }
   }
 
   static void installGlobalHandlers() {
@@ -59,9 +70,13 @@ class CrashReporter {
           message: details.exceptionAsString(),
           stackTrace: details.stack?.toString(),
           errorType: 'FlutterError',
+          errorSource: 'flutter',
           fatal: true,
         ),
       );
+      if (_config!.showFlutterErrorOnScreen) {
+        FlutterError.presentError(details);
+      }
       previousFlutterHandler?.call(details);
     };
 
@@ -72,6 +87,7 @@ class CrashReporter {
           message: error.toString(),
           stackTrace: stack.toString(),
           errorType: error.runtimeType.toString(),
+          errorSource: 'dart',
           fatal: true,
         ),
       );
@@ -82,22 +98,30 @@ class CrashReporter {
     };
   }
 
-  static Future<T> runGuarded<T>(FutureOr<T> Function() appRunner) async {
-    _assertInitialized();
-
-    return runZonedGuarded(
-      () async => appRunner(),
+  static Future<T> runGuarded<T>(FutureOr<T> Function() appRunner) {
+    final result = runZonedGuarded<Future<T>>(
+      () => Future<T>.sync(appRunner),
       (error, stack) {
+        if (!_initialized) {
+          return;
+        }
+
         unawaited(
           report(
             message: error.toString(),
             stackTrace: stack.toString(),
             errorType: error.runtimeType.toString(),
+            errorSource: 'dart',
             fatal: true,
           ),
         );
       },
     );
+
+    if (result == null) {
+      throw StateError('Failed to start guarded zone.');
+    }
+    return result;
   }
 
   static void addBreadcrumb(String message) {
@@ -107,29 +131,45 @@ class CrashReporter {
     }
   }
 
-  static Future<void> report({
+  /// Debug-only: ask App.cs to throw an unhandled .NET exception on a worker thread.
+  ///
+  /// The crash is persisted to disk and uploaded on the next app launch via
+  /// [flushNativeCrashes]. The current process may terminate shortly after this call.
+  static Future<void> simulateManagedCrashForTesting() async {
+    _assertInitialized();
+    debugPrint('[CrashReporter] simulateManagedCrashForTesting →');
+    await _nativeBridge?.simulateManagedCrash();
+    debugPrint('[CrashReporter] simulateManagedCrashForTesting ← done (relaunch app to flush)');
+  }
+
+  static Future<bool> report({
     required String message,
     String? stackTrace,
     String errorType = 'UnknownError',
+    String errorSource = 'dart',
     bool fatal = true,
     Map<String, String>? customKeys,
+    String? timestamp,
   }) async {
     _assertInitialized();
 
-    final payload = _buildPayload(
+    final payload = await _buildPayload(
       message: message,
       stackTrace: stackTrace,
       errorType: errorType,
+      errorSource: errorSource,
       fatal: fatal,
       customKeys: customKeys,
+      timestamp: timestamp,
     );
 
-    debugPrint('[CrashReporter] $errorType: $message');
+    debugPrint('[CrashReporter] $errorType ($errorSource): $message');
 
     final delivered = await _sendPayload(payload);
     if (!delivered) {
       await _enqueuePayload(payload);
     }
+    return delivered;
   }
 
   static Future<void> flushQueue() async {
@@ -159,30 +199,83 @@ class CrashReporter {
     }
   }
 
-  static Map<String, dynamic> _buildPayload({
+  static Future<void> flushNativeCrashes() async {
+    _assertInitialized();
+
+    final bridge = _nativeBridge;
+    if (bridge == null) {
+      debugPrint('[CrashReporter] flushNativeCrashes: skipped (no bridge)');
+      return;
+    }
+
+    debugPrint('[CrashReporter] flushNativeCrashes: start');
+    final pending = await bridge.getPendingNativeCrashes();
+    debugPrint('[CrashReporter] flushNativeCrashes: found ${pending.length} pending');
+    if (pending.isEmpty) {
+      debugPrint('[CrashReporter] flushNativeCrashes: done (nothing to upload)');
+      return;
+    }
+
+    for (final crash in pending) {
+      final id = crash['id']?.toString();
+      if (id == null || id.isEmpty) {
+        debugPrint('[CrashReporter] flushNativeCrashes: skipping crash without id');
+        continue;
+      }
+
+      debugPrint('[CrashReporter] flushNativeCrashes: uploading id=$id');
+      final delivered = await report(
+        message: crash['message']?.toString() ?? 'Native crash',
+        stackTrace: crash['stackTrace']?.toString(),
+        errorType: crash['errorType']?.toString() ?? 'NativeCrash',
+        errorSource: crash['errorSource']?.toString() ?? 'native_managed',
+        fatal: crash['fatal'] != false,
+        timestamp: crash['timestamp']?.toString(),
+        customKeys: {
+          'nativeCrashId': id,
+          if (crash['signal'] != null) 'signal': crash['signal'].toString(),
+        },
+      );
+
+      if (delivered) {
+        debugPrint('[CrashReporter] flushNativeCrashes: uploaded id=$id, clearing file');
+        await bridge.clearPendingNativeCrash(id);
+      } else {
+        debugPrint('[CrashReporter] flushNativeCrashes: upload failed for id=$id');
+      }
+    }
+
+    debugPrint('[CrashReporter] flushNativeCrashes: done');
+  }
+
+  static Future<Map<String, dynamic>> _buildPayload({
     required String message,
     String? stackTrace,
     required String errorType,
+    required String errorSource,
     required bool fatal,
     Map<String, String>? customKeys,
-  }) {
+    String? timestamp,
+  }) async {
     final config = _config!;
+    final metadata = await _resolveMetadata();
 
     return {
       'platform': 'tizen',
-      'deviceType': config.deviceType.value,
-      'deviceModel': config.deviceModel,
-      'tizenVersion': config.tizenVersion,
-      'appId': config.appId,
-      'appVersion': config.appVersion,
-      'buildNumber': config.buildNumber,
+      'deviceType': metadata['deviceType'] ?? config.deviceType.value,
+      'deviceModel': metadata['deviceModel'] ?? config.deviceModel,
+      'tizenVersion': metadata['tizenVersion'] ?? config.tizenVersion,
+      'appId': metadata['appId'] ?? config.appId,
+      'appVersion': metadata['appVersion'] ?? config.appVersion,
+      'buildNumber': metadata['buildNumber'] ?? config.buildNumber,
       'fatal': fatal,
       'errorType': errorType,
+      'errorSource': errorSource,
       'message': message,
       'stackTrace': stackTrace,
       'breadcrumbs': List<String>.from(_breadcrumbs),
       'sessionId': _sessionId,
-      'timestamp': DateTime.now().toUtc().toIso8601String(),
+      'timestamp': timestamp ?? DateTime.now().toUtc().toIso8601String(),
       'customKeys': {
         'sessionAgeSeconds':
             DateTime.now().toUtc().difference(_sessionStartedAt).inSeconds.toString(),
@@ -194,22 +287,39 @@ class CrashReporter {
     };
   }
 
+  static Future<Map<String, String>> _resolveMetadata() async {
+    final provider = _config?.metadataProvider;
+    if (provider == null) {
+      return {};
+    }
+
+    try {
+      return await provider();
+    } catch (error) {
+      debugPrint('[CrashReporter] metadataProvider failed: $error');
+      return {};
+    }
+  }
+
   static Future<bool> _sendPayload(
     Map<String, dynamic> payload, {
     bool fromQueue = false,
   }) async {
     final config = _config!;
     final maxAttempts = fromQueue ? 1 : config.maxRetries;
+    final headers = <String, String>{
+      'Content-Type': 'application/json',
+    };
+    if (config.apiKey.isNotEmpty) {
+      headers['X-Api-Key'] = config.apiKey;
+    }
 
     for (var attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         final response = await http
             .post(
               Uri.parse(config.endpoint),
-              headers: {
-                'Content-Type': 'application/json',
-                'X-Api-Key': config.apiKey,
-              },
+              headers: headers,
               body: jsonEncode(payload),
             )
             .timeout(config.timeout);

@@ -3,9 +3,11 @@
   "version": "1.0.0",
   "scripts": {
     "dev": "node dev-server.js",
-    "dev:vercel": "npx vercel dev"
+    "dev:vercel": "npx vercel dev",
+    "test:schema": "node scripts/test-schema.js"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.49.1",
     "express": "^4.19.2"
   }
 }

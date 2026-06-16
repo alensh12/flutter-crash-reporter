@@ -5,24 +5,35 @@ import 'package:tizen_crash_reporter/tizen_crash_reporter.dart';
 ///
 /// Replace endpoint/apiKey/app metadata with your real values.
 Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-
-  await CrashReporter.init(
-    config: const CrashReporterConfig(
-      endpoint: 'https://your-app.vercel.app/crashes',
-      apiKey: 'your-secret-key',
-      appId: 'com.example.tizen.tvapp',
-      appVersion: '1.0.0',
-      buildNumber: '1',
-      deviceType: TizenDeviceType.tv,
-      deviceModel: 'Samsung TV',
-      tizenVersion: '8.0',
-    ),
-  );
-
-  CrashReporter.installGlobalHandlers();
-
   await CrashReporter.runGuarded(() async {
+    WidgetsFlutterBinding.ensureInitialized();
+
+    await CrashReporter.init(
+      config: CrashReporterConfig(
+        endpoint: 'https://your-app.vercel.app/crashes',
+        // Leave apiKey empty until CRASH_REPORTER_API_KEY is set on Vercel.
+        appId: 'com.example.tizen.tvapp',
+        appVersion: '1.0.0',
+        buildNumber: '1',
+        deviceType: TizenDeviceType.tv,
+        deviceModel: 'Samsung TV',
+        tizenVersion: '8.0',
+        enableNativeCrashFlush: true,
+        metadataProvider: () async {
+          // Replace with PackageInfo + DeviceInfoPluginTizen in a real app.
+          return {
+            'appId': 'com.example.tizen.tvapp',
+            'appVersion': '1.0.0',
+            'buildNumber': '1',
+            'deviceType': 'tv',
+            'deviceModel': 'Samsung TV',
+            'tizenVersion': '8.0',
+          };
+        },
+      ),
+    );
+
+    CrashReporter.installGlobalHandlers();
     runApp(const ExampleApp());
   });
 }
